@@ -21,7 +21,7 @@ except ImportError:
     print("WARNING: google.generativeai library not found. AI features will be disabled.")
 
 # --- Configuration ---
-DEFAULT_API_KEY = "YOUR_GOOGLE_AI_API_KEY_HERE" # Important: User must replace this
+DEFAULT_API_KEY = "https://aistudio.google.com/apikey" # Important: User must replace this
 
 # --- Image Generation Worker (Text Prompt Enhancement + Simulated Image) ---
 class ImageGenerationWorker(QThread):
@@ -61,7 +61,7 @@ class ImageGenerationWorker(QThread):
         try:
             self.progress.emit("Configuring AI model with provided API key...")
             # The API key should be configured once globally, or per model instance.
-            # genai.configure(api_key=self.api_key) # Usually done once at app start or when key changes
+            # genai.configure(api_key=self.api_key) # This is now handled globally in the main app
 
             model_name = self.generation_params.get("model_name", 'gemini-1.5-flash-latest')
             
@@ -103,7 +103,7 @@ class ImageGenerationWorker(QThread):
             
             response = model.generate_content(text_prompt_for_llm)
             
-            if not response.candidates or not response.text:
+            if not response.candidates or not hasattr(response, 'text') or not response.text:
                 # Check for blocked prompt or other issues
                 try:
                     error_info = str(response.prompt_feedback)
@@ -169,6 +169,7 @@ class SmartImageApp(QMainWindow):
         # Using QSettings for persistence
         self.settings = QSettings("MyCompany", "SmartImageApp")
         self.api_key = "" # Loaded from settings
+        self.genai_configured_successfully = False # Flag for genai configuration status
 
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
@@ -370,12 +371,14 @@ class SmartImageApp(QMainWindow):
         self.update_dev_log(status_msg)
 
     def configure_genai_globally(self):
+        self.genai_configured_successfully = False # Reset flag
         if GOOGLE_GENAI_AVAILABLE and self.api_key and self.api_key != DEFAULT_API_KEY:
             try:
                 genai.configure(api_key=self.api_key)
                 msg = "Google GenAI configured successfully with the API key."
                 self.status_bar.showMessage(msg)
                 self.update_dev_log(msg)
+                self.genai_configured_successfully = True
                 return True
             except Exception as e:
                 msg = f"Error configuring Google GenAI: {e}"
@@ -408,12 +411,13 @@ class SmartImageApp(QMainWindow):
 
         self.update_dev_log("Settings saved to persistent storage.")
         
-        if self.api_key != old_api_key or not genai.API_KEY: # If key changed or was never set
+        # Check if key changed or if genai was not successfully configured before
+        if self.api_key != old_api_key or not self.genai_configured_successfully:
             if self.configure_genai_globally():
-                 QMessageBox.information(self, "Settings Saved", "Settings saved and Google AI API Key applied successfully.")
+                    QMessageBox.information(self, "Settings Saved", "Settings saved and Google AI API Key applied successfully.")
             # Error messages handled by configure_genai_globally
         else:
-            QMessageBox.information(self, "Settings Saved", "Settings saved. API key was unchanged or already configured.")
+            QMessageBox.information(self, "Settings Saved", "Settings saved. API key was unchanged and already configured.")
         self.status_bar.showMessage("Settings saved.", 5000)
 
 
@@ -438,7 +442,8 @@ class SmartImageApp(QMainWindow):
             self.on_generation_finished(None) # Trigger simulation without AI
             return
 
-        if not self.api_key or self.api_key == DEFAULT_API_KEY or not genai.API_KEY: # Check if genai is truly configured
+        # Check if API key is present and genai has been successfully configured
+        if not self.api_key or self.api_key == DEFAULT_API_KEY or not self.genai_configured_successfully:
             QMessageBox.warning(self, "API Key Error", "Google AI API Key is not configured or is invalid. Please set it in System Settings and click 'Save & Apply'.")
             self.tabs.setCurrentWidget(self.system_settings_tab)
             return
@@ -550,7 +555,7 @@ class SmartImageApp(QMainWindow):
             QMessageBox.warning(self, "Test Error", "Google GenAI library not available.")
             return
 
-        if not self.api_key or self.api_key == DEFAULT_API_KEY or not genai.API_KEY:
+        if not self.api_key or self.api_key == DEFAULT_API_KEY or not self.genai_configured_successfully:
             self.update_dev_log("API Key not configured or GenAI not initialized. Test cannot run.")
             QMessageBox.warning(self, "API Key Error", "Please configure API Key in System Settings and Save/Apply.")
             return
@@ -572,7 +577,7 @@ class SmartImageApp(QMainWindow):
             self.update_dev_log(f"Sending to LLM ({model.model_name}): {text_prompt_for_llm[:150]}...")
             response = model.generate_content(text_prompt_for_llm)
             
-            if response.text:
+            if hasattr(response, 'text') and response.text:
                 self.update_dev_log(f"LLM Response (Refined Prompt):\n{response.text}")
             else:
                 self.update_dev_log(f"LLM generated no text. Feedback: {response.prompt_feedback}")
@@ -585,8 +590,10 @@ class SmartImageApp(QMainWindow):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if self.current_pixmap:
-            scaled_pixmap = self.current_pixmap.scaled(self.image_display_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            self.image_display_label.setPixmap(scaled_pixmap)
+            # Check if image_display_label is not None and has a valid size
+            if self.image_display_label and self.image_display_label.size().isValid() and self.image_display_label.width() > 0 and self.image_display_label.height() > 0:
+                scaled_pixmap = self.current_pixmap.scaled(self.image_display_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                self.image_display_label.setPixmap(scaled_pixmap)
 
     def closeEvent(self, event):
         # Save settings on close (QSettings often auto-saves, but explicit can be good)
